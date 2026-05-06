@@ -646,3 +646,46 @@ ora                     → Spinners for long operations
 **Insufficient context for agents.** If the input documentation is poor, agents produce vague analyses. Mitigation: the analyst has an explicit ambiguities section that forces the conversation at gate 1 before advancing.
 
 **Merge complexity in integration.** Modules that seem independent may have subtle conflicts. Mitigation: interface contracts are the source of truth. The integrator only merges, it doesn't rewrite logic. Logic conflicts escalate to the human.
+
+---
+
+## 12. Implementation Status (as of 2026-05-06)
+
+### Completed
+- [x] **Sprint 1**: Base infrastructure (TypeScript project, router-client, model-config, github layer, base-agent, analyst agent, minimal CLI)
+- [x] **Sprint 2**: State machine + gates (state-machine, state-store, gate-manager, CLI status/approve/reject/resume commands)
+- [x] **Sprint 3**: Architect + planner agents (architect agent with tools, planner agent with development plan generation)
+- [x] **Sprint 4 - Partial**: 
+  - [x] Code reviewer agent (prompts, tools, agent class)
+  - [x] Integration of reviewer agent into orchestrator (DEVELOPING and REVIEWING_CODE phases)
+  - [ ] Developer agents (code exists but integration pending)
+  - [ ] Parallel execution of developer agents
+  - [ ] Full PR review cycle (approve → request changes → fix → re-review)
+
+### Pending (Sprint 4 - remaining)
+- [ ] Complete developer agent integration in `resume.ts` (currently placeholder)
+- [ ] Implement `INTEGRATING` phase (merge PRs in dependency order)
+- [ ] Implement `AWAITING_CODE_APPROVAL` gate logic
+- [ ] Implement `DEPLOYING` phase (deployer agent)
+- [ ] Implement `AWAITING_DEPLOY_APPROVAL` gate logic
+
+### Pending (Sprint 5)
+- [ ] **Integrator Agent**: Implement `src/agents/integrator/agent.ts` with tools:
+  - `get_dependency_graph()` - get topological merge order
+  - `merge_pr()` - merge a PR
+  - `check_merge_conflicts()` - check for conflicts
+  - `resolve_conflict()` - resolve simple conflicts
+  - `escalate_conflict()` - escalate logic conflicts
+- [ ] **Deployer Agent**: Implement `src/agents/deployer/agent.ts` with tools:
+  - `run_command()` - execute command in sandbox
+  - `check_health()` - verify endpoint responds
+  - `read_deploy_logs()` - read deployment logs
+  - `notify_supervisor()` - send notification
+- [ ] Complete integration of integrator and deployer in `resume.ts`
+- [ ] End-to-end testing with a simple backend API test case
+
+### Known Issues to Fix
+- [ ] Developer agent `tools.ts` references `fileWriter.readFile()` but method may not exist in `FileWriter`
+- [ ] `repo-reader.ts` has syntax errors (missing commas in function calls like line 65, 74, 85)
+- [ ] State persistence in `gate-manager.ts` needs proper SHA handling
+- [ ] Need to implement actual test/linter execution in developer agent tools (currently placeholders)
