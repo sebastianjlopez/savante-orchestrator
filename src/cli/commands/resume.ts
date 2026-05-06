@@ -7,10 +7,14 @@ import { GateManager } from "../../orchestrator/gate-manager.js";
 import { AnalystAgent } from "../../agents/analyst/agent.js";
 import { ArchitectAgent } from "../../agents/architect/agent.js";
 import { PlannerAgent } from "../../agents/planner/agent.js";
+import { DeveloperAgent } from "../../agents/developer/agent.js";
+import { ReviewerAgent } from "../../agents/reviewer/agent.js";
 import { RepoReader } from "../../github/repo-reader.js";
 import { FileWriter } from "../../github/file-writer.js";
 import { BranchManager } from "../../github/branch-manager.js";
+import { PRManager } from "../../github/pr-manager.js";
 import { AWSPriceClient } from "../../aws/pricing-client.js";
+import type { DevelopmentPlan, ModuleSpec } from "../../types/plan.js";
 
 interface ResumeOptions {
   target?: string;
@@ -55,6 +59,7 @@ export async function resumeCommand(options: ResumeOptions): Promise<void> {
     const repoReader = new RepoReader(github);
     const fileWriter = new FileWriter(octokit);
     const branchManager = new BranchManager(octokit);
+    const prManager = new PRManager(octokit);
     const gateManager = new GateManager(stateStore, state, targetRepo);
 
     // Resume based on current phase
@@ -67,6 +72,7 @@ export async function resumeCommand(options: ResumeOptions): Promise<void> {
       repoReader,
       fileWriter,
       branchManager,
+      prManager,
       gateManager,
       sha
     );
@@ -92,6 +98,7 @@ async function resumePhase(
   repoReader: RepoReader,
   fileWriter: FileWriter,
   branchManager: BranchManager,
+  prManager: PRManager,
   gateManager: GateManager,
   sha: string
 ): Promise<string> {
@@ -195,10 +202,165 @@ async function resumePhase(
     }
 
     case "DEVELOPING": {
-      console.log(chalk.cyan("\n[Phase 4] Development in progress..."));
-      console.log(chalk.yellow("  Developer agents will be implemented in Sprint 4."));
-      console.log(chalk.yellow("  This phase requires module decomposition and parallel development.\n"));
-      return "DEVELOPING";
+      console.log(chalk.cyan("\n[Phase 4] Running developer agents..."));
+
+      // Read the development plan to get modules
+      const planContent = await repoReader.readFile(
+        targetRepo.owner,
+        targetRepo.repo,
+        "docs/development-plan.json"
+      );
+      const developmentPlan = JSON.parse(planContent) as DevelopmentPlan;
+
+      if (!developmentPlan.modules || developmentPlan.modules.length === 0) {
+        throw new Error("No modules found in development plan");
+      }
+
+      console.log(chalk.cyan(`  Found ${developmentPlan.modules.length} modules to develop`));
+
+      // Create branches and run developer agents in parallel
+      const devPromises = developmentPlan.modules.map(async (moduleSpec: ModuleSpec) => {
+        const branchName = `feature/module-${moduleSpec.name.toLowerCase().replace(/\s+/g, "-")}`;
+
+        // Create branch if it doesn't exist
+        try {
+          await branchManager.createBranch(targetRepo.owner, targetRepo.repo, branchName, "main");
+          console.log(chalk.green(`  ✓ Branch created: ${branchName}`));
+        } catch (error: any) {
+          // Branch might already exist
+          if (!error.message?.includes("already exists")) {
+            console.log(chalk.yellow(`  ⚠ Could not create branch ${branchName}: ${error.message}`));
+          }
+        }
+
+        // Run developer agent
+        console.log(chalk.cyan(`  Starting developer agent for module: ${moduleSpec.name}`));
+        const developer = new DeveloperAgent({
+          targetRepo,
+          repoReader,
+          fileWriter,
+          prManager,
+          moduleSpec,
+          interfaceContracts: developmentPlan.interfaceContracts,
+          branch: branchName,
+          developmentPlanPath: "docs/development-plan.json",
+        });
+
+        try {
+          const result = await developer.run({});
+          console.log(chalk.green(`  ✓ Developer agent completed for ${moduleSpec.name}`));
+          return { module: moduleSpec.name, status: "completed", result, branch: branchName };
+        } catch (error) {
+          console.log(chalk.red(`  ✗ Developer agent failed for ${moduleSpec.name}: ${error instanceof Error ? error.message : String(error)}`));
+          return { module: moduleSpec.name, status: "failed", error, branch: branchName };
+        }
+      });
+
+      const results = await Promise.allSettled(devPromises);
+
+      // Process results
+      const completed = results.filter(r => r.status === "fulfilled" && (r.value as any).status === "completed").length;
+      const failed = results.filter(r => r.status === "rejected" || (r.status === "fulfilled" && (r.value as any).status === "failed")).length;
+
+      console.log(chalk.green(`\n✓ Development complete: ${completed} completed, ${failed} failed`));
+
+      // Update state with module statuses
+      state.modules = developmentPlan.modules.map((m: ModuleSpec) => {
+        const result = results.find(r =>
+          r.status === "fulfilled" && (r.value as any).module === m.name
+        );
+        return {
+          name: m.name,
+          status: result ? "completed" : "blocked",
+          branch: `feature/module-${m.name.toLowerCase().replace(/\s+/g, "-")}`,
+        };
+      });
+      state.current_phase = "REVIEWING_CODE";
+      state.updated_at = new Date().toISOString();
+      await stateStore.saveState(targetRepo, state, sha);
+
+      return "REVIEWING_CODE";
+    }
+
+    case "REVIEWING_CODE": {
+      console.log(chalk.cyan("\n[Phase 5] Reviewing pull requests..."));
+
+      // Get all open PRs that are from feature/module-* branches
+      const prs = await prManager.listPRs(targetRepo.owner, targetRepo.repo, "open");
+      const modulePRs = prs.filter(pr => pr.head.ref.startsWith("feature/module-"));
+
+      if (modulePRs.length === 0) {
+        console.log(chalk.yellow("  No module PRs found to review."));
+        return "REVIEWING_CODE";
+      }
+
+      console.log(chalk.cyan(`  Found ${modulePRs.length} PRs to review`));
+
+      // Run reviewer agents in parallel for each PR
+      const reviewPromises = modulePRs.map(async (pr) => {
+        console.log(chalk.cyan(`  Starting reviewer agent for PR #${pr.number}: ${pr.title}`));
+
+        const reviewer = new ReviewerAgent({
+          targetRepo,
+          prManager,
+          repoReader,
+          prNumber: pr.number,
+          developmentPlanPath: "docs/development-plan.json",
+        });
+
+        try {
+          const result = await reviewer.run({});
+          console.log(chalk.green(`  ✓ Reviewer completed for PR #${pr.number}`));
+          return { prNumber: pr.number, status: "completed", result };
+        } catch (error) {
+          console.log(chalk.red(`  ✗ Reviewer failed for PR #${pr.number}: ${error instanceof Error ? error.message : String(error)}`));
+          return { prNumber: pr.number, status: "failed", error };
+        }
+      });
+
+      const reviewResults = await Promise.allSettled(reviewPromises);
+
+      // Check if all PRs are approved
+      const approvedPRs = (await Promise.all(
+        modulePRs.map(async (pr) => {
+          const prDetails = await prManager.getPR(targetRepo.owner, targetRepo.repo, pr.number);
+          // PR is approved if it's merged or has an approved review
+          return prDetails.merged === true;
+        })
+      )).filter(Boolean).length;
+
+      console.log(chalk.green(`\n✓ Review complete: ${approvedPRs}/${modulePRs.length} PRs approved`));
+
+      // If all approved, move to integration
+      if (approvedPRs === modulePRs.length) {
+        console.log(chalk.green("  All PRs approved! Moving to integration phase."));
+        state.current_phase = "INTEGRATING";
+        state.updated_at = new Date().toISOString();
+        await stateStore.saveState(targetRepo, state, sha);
+        return "INTEGRATING";
+      } else {
+        console.log(chalk.yellow("  Some PRs need changes. Process will continue after fixes."));
+        return "REVIEWING_CODE";
+      }
+    }
+
+    case "INTEGRATING": {
+      console.log(chalk.cyan("\n[Phase 6] Integrating modules..."));
+      console.log(chalk.yellow("  Integrator agent will be implemented in Sprint 5."));
+      console.log(chalk.yellow("  This phase handles merging approved PRs in dependency order.\n"));
+
+      // For now, just transition to AWAITING_CODE_APPROVAL
+      state.current_phase = "AWAITING_CODE_APPROVAL";
+      state.updated_at = new Date().toISOString();
+      await stateStore.saveState(targetRepo, state, sha);
+
+      return "AWAITING_CODE_APPROVAL";
+    }
+
+    case "DEPLOYING": {
+      console.log(chalk.cyan("\n[Phase 7] Deploying application..."));
+      console.log(chalk.yellow("  Deployer agent will be implemented in Sprint 5.\n"));
+      return "DEPLOYING";
     }
 
     default: {
