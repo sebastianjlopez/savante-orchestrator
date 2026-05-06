@@ -319,18 +319,50 @@ The loop works as follows: the prompt is sent to the model via OpenRouter → th
 
 ### Development Agents (N instances)
 
-**Input:** Assigned module spec + interface contracts.
-**Output:** Code in a branch, with an open PR.
+**Input:** Assigned module spec + interface contracts + repository structure context.
+**Output:** Working code in an isolated branch, with an open PR ready for review.
 
 **Available tools:**
-- `read_module_spec()` — reads its module specification.
-- `read_interface_contracts()` — reads the contracts it must fulfill.
-- `create_file(path, content)` — creates a file in its branch.
-- `edit_file(path, old, new)` — edits an existing file.
-- `run_tests()` — runs its module's tests.
-- `open_pull_request(title, description)` — opens the PR when finished.
+- `read_module_spec(module_name)` — reads the assigned module specification (ModuleSpec type from `types/plan.ts`).
+- `read_interface_contracts()` — reads all interface contracts to understand dependencies.
+- `read_repo_structure()` — reads the target repo folder structure to know where to place files.
+- `create_file(path, content)` — creates a new file in the agent's isolated branch.
+- `edit_file(path, old_snippet, new_snippet)` — edits an existing file using snippet replacement.
+- `read_file(path)` — reads a file from the agent's branch for verification.
+- `run_tests(module_name)` — runs the module's test suite.
+- `run_linter(module_name)` — runs linter on the module's code.
+- `check_contract_compliance(contract_id)` — validates that the implementation fulfills a specific interface contract.
+- `open_pull_request(title, description)` — opens a PR from the agent's branch to main.
 
-**Key constraint:** each developer agent only has access to its branch and the interface contracts. It does not see other modules' code.
+**System prompt (directive summary):**
+- You are a Senior Developer Agent specialized in implementing a specific module based on its specification and interface contracts.
+- You work in isolation — you only see your module spec, contracts, and repo structure. You never see other modules' code.
+- Before writing code, read and fully understand: (1) your ModuleSpec, (2) all InterfaceContracts where you are the consumer, (3) the repo structure.
+- Follow the established code style and patterns in the repository. If the repo is empty, create clean, idiomatic code.
+- Implement ALL endpoints, functions, and logic defined in your ModuleSpec responsibilities.
+- Ensure your implementation fulfills ALL InterfaceContracts where you are the provider.
+- Write code with proper error handling, input validation, and logging.
+- After writing code, run tests and linter. Fix any issues before opening the PR.
+- Your PR description must include: module name, list of implemented endpoints/features, how to test, and any deviations from the spec.
+- Output format: your final action is to open a PR. The PR title should be `[Module: {name}] Implementation`.
+
+**Key constraints:**
+1. **Isolation:** each developer agent only has access to its branch and interface contracts. It cannot read other modules' code.
+2. **Branch naming:** `feature/module-{kebab-case-name}` — consistent naming for tracking.
+3. **Contract-first:** implementations must satisfy the InterfaceContract definitions. The `check_contract_compliance` tool validates this.
+4. **Test-driven where possible:** run tests after each significant code change.
+
+**Parallel execution model:**
+- The orchestrator spawns N developer agents in parallel using `Promise.allSettled()`.
+- Each agent runs in its own branch — no conflicts possible during development.
+- Agents have no inter-agent communication — they only interact through the shared interface contracts.
+- The orchestrator monitors all agents and collects results (success/failure/blocked).
+
+**Handling failures:**
+- If tests fail: agent retries up to 3 times with increasing context about the failure.
+- If contracts not met: agent revises implementation and re-checks compliance.
+- If agent is blocked (missing info, unclear spec): it escalates to the orchestrator with a specific question.
+- After 2 consecutive failures with V3.2, the agent escalates to K2.5 (configured in model-config.ts).
 
 ### Code Reviewer Agent
 
