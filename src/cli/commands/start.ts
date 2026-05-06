@@ -3,10 +3,12 @@ import ora from "ora";
 import { GitHubClient, type GitHubRepo } from "../../github/client.js";
 import { RepoReader } from "../../github/repo-reader.js";
 import { AnalystAgent } from "../../agents/analyst/agent.js";
-import { readFileSync, writeFileSync } from "fs";
-import { join } from "path";
 
-export async function startCommand(): Promise<void> {
+interface StartOptions {
+  target?: string;
+}
+
+export async function startCommand(options: StartOptions): Promise<void> {
   console.log(chalk.bold("\n🚀 Savante Orchestrator - Starting Analysis\n"));
 
   const spinner = ora("Loading orchestrator state...").start();
@@ -15,10 +17,18 @@ export async function startCommand(): Promise<void> {
     const github = new GitHubClient();
     const octokit = github.getOctokit();
 
+    // Parse target repo from options or use state
+    let targetRepo: GitHubRepo;
+    if (options.target) {
+      targetRepo = parseRepo(options.target);
+    } else {
+      throw new Error("Target repo is required. Use --target owner/repo or set it during init.");
+    }
+
     // Read state from _orchestrator branch
     const { data: stateFile } = await octokit.repos.getContent({
-      owner: "savante", // This should be read from state or config
-      repo: "code-agent", // This should be read from state or config
+      owner: targetRepo.owner,
+      repo: targetRepo.repo,
       path: "orchestrator-state.json",
       ref: "_orchestrator",
     });
@@ -29,7 +39,7 @@ export async function startCommand(): Promise<void> {
 
     const state = JSON.parse(Buffer.from(stateFile.content, 'base64').toString());
     const sourceRepo = parseRepo(state.source_repo);
-    const targetRepo = parseRepo(state.target_repo);
+    // targetRepo already defined above from options
 
     spinner.succeed("State loaded");
 
