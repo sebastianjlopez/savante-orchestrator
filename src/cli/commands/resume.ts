@@ -216,11 +216,33 @@ async function resumePhase(
         throw new Error("No modules found in development plan");
       }
 
-      console.log(chalk.cyan(`  Found ${developmentPlan.modules.length} modules to develop`));
+      console.log(chalk.cyan(`  Found ${developmentPlan.modules.length} modules in plan`));
 
-      // Create branches and run developer agents in parallel
-      const devPromises = developmentPlan.modules.map(async (moduleSpec: ModuleSpec) => {
+      // Filter modules that need work: new modules or ones that need fixes
+      const modulesToProcess = developmentPlan.modules.filter((m: ModuleSpec) => {
+        const modState = state.modules.find((s: any) => s.name === m.name);
+        // Process if: no state yet (new), or status is needs_fix
+        return !modState || modState.status === "needs_fix";
+      });
+
+      if (modulesToProcess.length === 0) {
+        console.log(chalk.yellow("  No modules need work. All modules are completed."));
+        return "DEVELOPING";
+      }
+
+      console.log(chalk.cyan(`  Processing ${modulesToProcess.length} modules that need work`));
+
+      // Process modules sequentially to avoid race conditions
+      for (const moduleSpec of modulesToProcess) {
         const branchName = `feature/module-${moduleSpec.name.toLowerCase().replace(/\s+/g, "-")}`;
+        const modState = state.modules.find((s: any) => s.name === moduleSpec.name);
+
+        // Get feedback if module needs fixes
+        let feedback: string | undefined;
+        if (modState?.status === "needs_fix") {
+          feedback = modState.lastFeedback;
+          console.log(chalk.yellow(`  Module "${moduleSpec.name}" needs fixes. Feedback: ${feedback || "(none)"}`));
+        }
 
         // Create branch if it doesn't exist
         try {
@@ -235,6 +257,10 @@ async function resumePhase(
 
         // Run developer agent
         console.log(chalk.cyan(`  Starting developer agent for module: ${moduleSpec.name}`));
+
+        // Get PR number if it exists (for read_pr_comments tool)
+        const prNumber = await getPRNumberForBranch(prManager, targetRepo, branchName);
+
         const developer = new DeveloperAgent({
           targetRepo,
           repoReader,
@@ -244,37 +270,47 @@ async function resumePhase(
           interfaceContracts: developmentPlan.interfaceContracts,
           branch: branchName,
           developmentPlanPath: "docs/development-plan.json",
+          feedback,  // Pass feedback to agent if available
+          prNumber,  // Pass PR number for read_pr_comments tool
         });
 
         try {
           const result = await developer.run({});
           console.log(chalk.green(`  ✓ Developer agent completed for ${moduleSpec.name}`));
-          return { module: moduleSpec.name, status: "completed", result, branch: branchName };
+
+          // Update module status
+          const existingIndex = state.modules.findIndex((s: any) => s.name === moduleSpec.name);
+
+          if (existingIndex >= 0) {
+            state.modules[existingIndex] = {
+              ...state.modules[existingIndex],
+              status: "completed",
+              pr_number: prNumber,
+              reviewStatus: prNumber ? "pending" : undefined,
+            };
+          } else {
+            state.modules.push({
+              name: moduleSpec.name,
+              status: "completed",
+              branch: branchName,
+              pr_number: prNumber,
+              reviewStatus: prNumber ? "pending" : undefined,
+              attempts: (modState?.attempts || 0) + 1,
+            });
+          }
         } catch (error) {
           console.log(chalk.red(`  ✗ Developer agent failed for ${moduleSpec.name}: ${error instanceof Error ? error.message : String(error)}`));
-          return { module: moduleSpec.name, status: "failed", error, branch: branchName };
+
+          // Update module status to needs_fix
+          const existingIndex = state.modules.findIndex((s: any) => s.name === moduleSpec.name);
+          if (existingIndex >= 0) {
+            state.modules[existingIndex].status = "needs_fix";
+          }
         }
-      });
+      }
 
-      const results = await Promise.allSettled(devPromises);
+      console.log(chalk.green(`\n✓ Development complete for all modules`));
 
-      // Process results
-      const completed = results.filter(r => r.status === "fulfilled" && (r.value as any).status === "completed").length;
-      const failed = results.filter(r => r.status === "rejected" || (r.status === "fulfilled" && (r.value as any).status === "failed")).length;
-
-      console.log(chalk.green(`\n✓ Development complete: ${completed} completed, ${failed} failed`));
-
-      // Update state with module statuses
-      state.modules = developmentPlan.modules.map((m: ModuleSpec) => {
-        const result = results.find(r =>
-          r.status === "fulfilled" && (r.value as any).module === m.name
-        );
-        return {
-          name: m.name,
-          status: result ? "completed" : "blocked",
-          branch: `feature/module-${m.name.toLowerCase().replace(/\s+/g, "-")}`,
-        };
-      });
       state.current_phase = "REVIEWING_CODE";
       state.updated_at = new Date().toISOString();
       await stateStore.saveState(targetRepo, state, sha);
@@ -320,26 +356,73 @@ async function resumePhase(
 
       const reviewResults = await Promise.allSettled(reviewPromises);
 
-      // Check if all PRs are approved
-      const approvedPRs = (await Promise.all(
-        modulePRs.map(async (pr) => {
-          const prDetails = await prManager.getPR(targetRepo.owner, targetRepo.repo, pr.number);
-          // PR is approved if it's merged or has an approved review
-          return prDetails.merged === true;
-        })
-      )).filter(Boolean).length;
+      // Now check the review status for each PR
+      const needsFixModules: string[] = [];
+      let allApproved = true;
+      let pendingReview = false;
 
-      console.log(chalk.green(`\n✓ Review complete: ${approvedPRs}/${modulePRs.length} PRs approved`));
+      for (const pr of modulePRs) {
+        const moduleName = extractModuleNameFromPR(pr);
+        console.log(chalk.cyan(`  Checking review status for PR #${pr.number}: ${pr.title}`));
+
+        // Get reviews for this PR
+        const reviews = await prManager.listReviews(targetRepo.owner, targetRepo.repo, pr.number);
+
+        // Find the latest review state
+        let latestState: string | null = null;
+        let latestFeedback: string | undefined;
+
+        if (reviews && reviews.length > 0) {
+          // Reviews are returned in chronological order, get the latest
+          const latestReview = reviews[reviews.length - 1];
+          latestState = latestReview.state;
+          latestFeedback = latestReview.body || undefined;
+        }
+
+        // Update state for this module
+        const moduleIndex = state.modules.findIndex((m: any) => m.name === moduleName);
+        if (moduleIndex >= 0) {
+          state.modules[moduleIndex].pr_number = pr.number;
+          state.modules[moduleIndex].reviewStatus = latestState?.toLowerCase() || "pending";
+          state.modules[moduleIndex].reviewCount = (state.modules[moduleIndex].reviewCount || 0) + 1;
+
+          if (latestState === "CHANGES_REQUESTED") {
+            state.modules[moduleIndex].status = "needs_fix";
+            state.modules[moduleIndex].lastFeedback = latestFeedback;
+            needsFixModules.push(moduleName);
+            allApproved = false;
+            console.log(chalk.yellow(`  ⚠ PR #${pr.number} needs changes: ${latestFeedback || "(no feedback given)"}`));
+          } else if (latestState === "APPROVED") {
+            state.modules[moduleIndex].status = "completed";
+            console.log(chalk.green(`  ✓ PR #${pr.number} is approved`));
+          } else {
+            allApproved = false;
+            pendingReview = true;
+            console.log(chalk.yellow(`  ⏳ PR #${pr.number} is pending review`));
+          }
+        }
+      }
+
+      // Save state before transitioning
+      state.updated_at = new Date().toISOString();
+      await stateStore.saveState(targetRepo, state, sha);
+
+      console.log(chalk.green(`\n✓ Review complete`));
 
       // If all approved, move to integration
-      if (approvedPRs === modulePRs.length) {
+      if (allApproved && needsFixModules.length === 0) {
         console.log(chalk.green("  All PRs approved! Moving to integration phase."));
         state.current_phase = "INTEGRATING";
-        state.updated_at = new Date().toISOString();
         await stateStore.saveState(targetRepo, state, sha);
         return "INTEGRATING";
+      } else if (needsFixModules.length > 0) {
+        // Some PRs need fixes - transition back to DEVELOPING
+        console.log(chalk.yellow(`  ${needsFixModules.length} PR(s) need fixes. Transitioning back to development.`));
+        state.current_phase = "DEVELOPING";
+        await stateStore.saveState(targetRepo, state, sha);
+        return "DEVELOPING";
       } else {
-        console.log(chalk.yellow("  Some PRs need changes. Process will continue after fixes."));
+        console.log(chalk.yellow("  Some PRs are still pending review. Waiting..."));
         return "REVIEWING_CODE";
       }
     }
@@ -480,5 +563,34 @@ function showNextSteps(phase: string, targetRepo: GitHubRepo): void {
     default:
       console.log("  1. Run `savante-orch status --target ...` to check state");
       console.log("  2. Run `savante-orch resume --target ...` to continue\n");
+  }
+}
+
+/**
+ * Extract module name from PR title or branch name
+ */
+function extractModuleNameFromPR(pr: any): string {
+  // Try to extract from PR title - format: [Module: {name}] Implementation
+  const titleMatch = pr.title?.match(/\[Module:\s*(.+?)\]\s*Implementation/i);
+  if (titleMatch) {
+    return titleMatch[1].trim();
+  }
+  // Try to infer from branch name - format: feature/module-{name}
+  if (pr.head?.ref?.startsWith("feature/module-")) {
+    return pr.head.ref.replace("feature/module-", "").replace(/-/g, " ");
+  }
+  return pr.head?.ref || "unknown";
+}
+
+/**
+ * Get PR number for a given branch
+ */
+async function getPRNumberForBranch(prManager: PRManager, targetRepo: GitHubRepo, branchName: string): Promise<number | undefined> {
+  try {
+    const prs = await prManager.listPRs(targetRepo.owner, targetRepo.repo, "open");
+    const pr = prs.find((p: any) => p.head.ref === branchName);
+    return pr?.number;
+  } catch {
+    return undefined;
   }
 }

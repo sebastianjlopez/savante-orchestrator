@@ -44,10 +44,13 @@ export type PhaseType =
 
 export interface ModuleStatus {
   name: string;
-  status: "pending" | "in_progress" | "completed" | "blocked";
+  status: "pending" | "in_progress" | "completed" | "blocked" | "needs_fix";
   branch: string;
   pr_number?: number;
   attempts: number;
+  reviewStatus?: "pending" | "approved" | "changes_requested";
+  reviewCount?: number;
+  lastFeedback?: string;
 }
 
 export interface DecisionLogEntry {

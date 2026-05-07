@@ -16,6 +16,8 @@ export interface DeveloperAgentOptions {
   interfaceContracts: InterfaceContract[];
   branch: string;
   developmentPlanPath?: string;
+  feedback?: string;  // Feedback from reviewer for fixes
+  prNumber?: number;  // PR number for read_pr_comments tool
 }
 
 export class DeveloperAgent extends BaseAgent {
@@ -25,6 +27,7 @@ export class DeveloperAgent extends BaseAgent {
   private moduleSpec: ModuleSpec;
   private interfaceContracts: InterfaceContract[];
   private branch: string;
+  private feedback?: string;
 
   constructor(options: DeveloperAgentOptions) {
     const toolOptions: DeveloperToolOptions = {
@@ -36,6 +39,7 @@ export class DeveloperAgent extends BaseAgent {
       interfaceContracts: options.interfaceContracts,
       branch: options.branch,
       developmentPlanPath: options.developmentPlanPath,
+      prNumber: options.prNumber,  // Pass PR number for read_pr_comments tool
     };
 
     const tools = getDeveloperTools(toolOptions);
@@ -57,13 +61,14 @@ export class DeveloperAgent extends BaseAgent {
     this.moduleSpec = options.moduleSpec;
     this.interfaceContracts = options.interfaceContracts;
     this.branch = options.branch;
+    this.feedback = options.feedback;
   }
 
   async run(context: Record<string, unknown>): Promise<string> {
     this.log("Starting development", `Module: ${this.moduleSpec.name}, Branch: ${this.branch}`);
 
     // Build the initial message for the agent
-    const userMessage = `Please implement the module "${this.moduleSpec.name}" based on the provided specification and interface contracts.
+    let userMessage = `Please implement the module "${this.moduleSpec.name}" based on the provided specification and interface contracts.
 
 ## Module Specification
 
@@ -74,7 +79,21 @@ ${JSON.stringify(this.moduleSpec, null, 2)}
 ${JSON.stringify(this.interfaceContracts.filter(c => c.provider === this.moduleSpec.name || c.consumer === this.moduleSpec.name), null, 2)}
 
 ---
+`;
 
+    // Add feedback section if this is a fix iteration
+    if (this.feedback) {
+      userMessage += `
+## Reviewer Feedback
+The reviewer requested changes. Please address the following feedback:
+
+${this.feedback}
+
+---
+`;
+    }
+
+    userMessage += `
 Please use the available tools to:
 1. Read your module spec with \`read_module_spec\`
 2. Read interface contracts with \`read_interface_contracts\`

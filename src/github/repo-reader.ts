@@ -82,7 +82,7 @@ export class RepoReader {
       owner,
       repo,
       tree_sha: ref,
-      recursive: 'true',
+      recursive: 'true' as any,  // API expects string "true"
     });
 
     if (!('data' in response) || !response.data.tree) {

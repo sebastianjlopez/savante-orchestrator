@@ -109,4 +109,24 @@ export class PRManager {
 
     return data as unknown as string;
   }
+
+  async listReviews(owner: string, repo: string, prNumber: number) {
+    const { data } = await this.octokit.pulls.listReviews({
+      owner,
+      repo,
+      pull_number: prNumber,
+    });
+
+    return data;
+  }
+
+  async listComments(owner: string, repo: string, prNumber: number) {
+    const { data } = await this.octokit.issues.listComments({
+      owner,
+      repo,
+      issue_number: prNumber,
+    });
+
+    return data;
+  }
 }

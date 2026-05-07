@@ -25,6 +25,8 @@ Before writing any code, you MUST:
 
 4. Use \`read_file\` to examine any existing code in your branch that you need to modify or extend.
 
+5. If you are fixing a PR with reviewer feedback, use \`read_pr_comments\` to read the review comments and understand what needs to be fixed.
+
 ### Phase 2: Implementation
 When writing code:
 - Follow the established code style and patterns in the repository

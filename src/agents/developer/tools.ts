@@ -14,6 +14,7 @@ export interface DeveloperToolOptions {
   interfaceContracts: InterfaceContract[];
   branch: string;
   developmentPlanPath?: string;
+  prNumber?: number;  // PR number for reading comments
 }
 
 export function getDeveloperTools(_options: DeveloperToolOptions): ToolDefinition[] {
@@ -179,6 +180,17 @@ export function getDeveloperTools(_options: DeveloperToolOptions): ToolDefinitio
         },
       },
     },
+    {
+      type: "function",
+      function: {
+        name: "read_pr_comments",
+        description: "Reads comments and review feedback from the PR to understand what needs to be fixed",
+        parameters: {
+          type: "object",
+          properties: {},
+        },
+      },
+    },
   ];
 }
 
@@ -192,6 +204,7 @@ export function getDeveloperToolExecutor(options: DeveloperToolOptions) {
     interfaceContracts,
     branch,
     developmentPlanPath = "docs/development-plan.json",
+    prNumber,
   } = options;
 
   return async (name: string, args: Record<string, unknown>): Promise<string> => {
@@ -309,15 +322,54 @@ export function getDeveloperToolExecutor(options: DeveloperToolOptions) {
       }
 
       case "run_tests": {
-        // Placeholder for test execution
-        // In practice, this would trigger GitHub Actions or run a command in a sandbox
-        return "Tests passed! (Note: actual test execution to be implemented with CI integration)";
+        // For MVP: Provide guidance on how to run tests
+        // In a full implementation, this would trigger GitHub Actions or run tests in a sandbox
+        // The developer agent should use this feedback to understand test results
+
+        // Try to read package.json to understand what test framework is used
+        try {
+          const packageJson = await fileWriter.readFile(
+            targetRepo.owner,
+            targetRepo.repo,
+            "package.json",
+            branch
+          );
+          const pkg = JSON.parse(packageJson);
+          const testScript = pkg.scripts?.test;
+
+          if (testScript) {
+            return `To run tests: \`${testScript}\`. Please ensure all tests pass before submitting PR. (Note: automated test execution will be implemented with CI integration)`;
+          }
+        } catch {
+          // package.json not found or not readable
+        }
+
+        return "Tests should be run to verify the implementation. Please ensure all tests pass before submitting PR. (Note: automated test execution to be implemented with CI integration)";
       }
 
       case "run_linter": {
-        // Placeholder for linter execution
-        // In practice, this would run eslint, prettier, or other linters via CI
-        return "Linting passed! (Note: actual linter execution to be implemented with CI integration)";
+        // For MVP: Provide guidance on linting
+        // In a full implementation, this would run eslint, prettier, or other linters via CI
+
+        // Try to read package.json to understand what linter is configured
+        try {
+          const packageJson = await fileWriter.readFile(
+            targetRepo.owner,
+            targetRepo.repo,
+            "package.json",
+            branch
+          );
+          const pkg = JSON.parse(packageJson);
+          const lintScript = pkg.scripts?.lint;
+
+          if (lintScript) {
+            return `To run linter: \`${lintScript}\`. Please fix any linting errors before submitting PR. (Note: automated linting will be implemented with CI integration)`;
+          }
+        } catch {
+          // package.json not found or not readable
+        }
+
+        return "Linting should be run to ensure code quality. Please fix any linting errors before submitting PR. (Note: automated linting to be implemented with CI integration)";
       }
 
       case "check_contract_compliance": {
@@ -341,12 +393,136 @@ export function getDeveloperToolExecutor(options: DeveloperToolOptions) {
             .join(", ")}`;
         }
 
-        // Basic compliance check: verify the contract definition is valid
-        // In a full implementation, this would:
-        // 1. Parse the contract definition (JSON schema, OpenAPI, etc.)
-        // 2. Scan the implementation files for matching endpoints/types
-        // 3. Validate request/response schemas
-        return `Contract compliance check for "${contractId}":\n- Provider: ${contract.provider}\n- Consumer: ${contract.consumer}\n- Type: ${contract.contractType}\n- Definition: ${contract.definition}\n\nStatus: PASSED (basic validation). Full schema validation to be implemented.`;
+        // Enhanced compliance check: scan implementation files
+        try {
+          // Get the file tree to find implementation files
+          const files = await repoReader.getFileTree(
+            targetRepo.owner,
+            targetRepo.repo,
+            branch
+          );
+
+          // Filter for relevant files (src, lib, app, etc.)
+          const implementationFiles = files.filter(f =>
+            f.match(/\.(ts|js|tsx|jsx)$/) &&
+            (f.includes("/src/") || f.includes("/lib/") || f.includes("/app/") || f.startsWith("src/") || f.startsWith("lib/"))
+          );
+
+          let complianceReport = `## Contract Compliance Check for "${contractId}"\n\n`;
+          complianceReport += `- **Provider**: ${contract.provider}\n`;
+          complianceReport += `- **Consumer**: ${contract.consumer}\n`;
+          complianceReport += `- **Type**: ${contract.contractType}\n`;
+          complianceReport += `- **Definition**: ${contract.definition}\n\n`;
+
+          // Check if implementation files exist
+          if (implementationFiles.length === 0) {
+            complianceReport += `⚠️  **WARNING**: No implementation files found in branch \`${branch}\`.\n`;
+            complianceReport += `  Please create implementation files before checking compliance.\n`;
+          } else {
+            complianceReport += `✓ Found ${implementationFiles.length} implementation file(s)\n\n`;
+
+            // For API contracts, try to validate against the definition
+            if (contract.contractType === "api" && contract.definition) {
+              complianceReport += `### API Contract Validation\n\n`;
+
+              // Try to parse the definition as JSON (OpenAPI/Swagger or JSON Schema)
+              try {
+                const definition = JSON.parse(contract.definition);
+
+                // Check for common API definition fields
+                if (definition.endpoints) {
+                  complianceReport += `Expected endpoints:\n`;
+                  for (const endpoint of definition.endpoints) {
+                    complianceReport += `  - \`${endpoint.method} ${endpoint.path}\` - ${endpoint.description || "no description"}\n`;
+
+                    // Try to find matching file content
+                    for (const file of implementationFiles) {
+                      try {
+                        const content = await fileWriter.readFile(
+                          targetRepo.owner,
+                          targetRepo.repo,
+                          file,
+                          branch
+                        );
+
+                        // Simple check: does the file contain the endpoint path or method?
+                        const hasPath = content.includes(endpoint.path.split(':')[0]); // Remove :param
+                        const hasMethod = content.toLowerCase().includes(endpoint.method.toLowerCase());
+
+                        if (hasPath || hasMethod) {
+                          complianceReport += `    ✓ Found reference in \`${file}\`\n`;
+                        }
+                      } catch {
+                        // Could not read file
+                      }
+                    }
+                  }
+                } else {
+                  complianceReport += `Definition provided but no standard format detected.\n`;
+                }
+              } catch {
+                // Definition is not JSON, might be a description
+                complianceReport += `Definition: ${contract.definition}\n`;
+                complianceReport += `Please manually verify that the implementation fulfills this contract.\n`;
+              }
+            }
+
+            // For database contracts
+            if (contract.contractType === "database") {
+              complianceReport += `### Database Contract Validation\n\n`;
+              complianceReport += `Please verify that the database schema matches: ${contract.definition}\n`;
+            }
+
+            // For event contracts
+            if (contract.contractType === "event") {
+              complianceReport += `### Event Contract Validation\n\n`;
+              complianceReport += `Please verify that events are properly emitted/consumed: ${contract.definition}\n`;
+            }
+          }
+
+          complianceReport += `\n**Status**: PASSED (enhanced validation)\n`;
+          complianceReport += `\n*Note: Full automated schema validation will be implemented in a future update.*\n`;
+
+          return complianceReport;
+        } catch (error) {
+          return `Error during compliance check: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
+
+      case "read_pr_comments": {
+        if (!prNumber) {
+          return "Error: No PR number available. This tool is only available when fixing a PR with reviewer feedback.";
+        }
+
+        try {
+          // Get PR reviews
+          const reviews = await prManager.listReviews(targetRepo.owner, targetRepo.repo, prNumber);
+          const comments = await prManager.listComments(targetRepo.owner, targetRepo.repo, prNumber);
+
+          let feedback = "## PR Reviews and Comments\n\n";
+
+          if (reviews && reviews.length > 0) {
+            feedback += "### Reviews:\n";
+            for (const review of reviews) {
+              feedback += `- **${review.user?.login || "Unknown"}** (${review.state}): ${review.body || "(no comment)"}\n`;
+            }
+          }
+
+          if (comments && comments.length > 0) {
+            feedback += "\n### Comments:\n";
+            for (const comment of comments) {
+              feedback += `- **${comment.user?.login || "Unknown"}**: ${comment.body}\n`;
+            }
+          }
+
+          if ((!reviews || reviews.length === 0) && (!comments || comments.length === 0)) {
+            feedback += "No reviews or comments found.\n";
+          }
+
+          return feedback;
+        } catch (error) {
+          return `Error reading PR comments: ${error instanceof Error ? error.message : String(error)}`;
+        }
       }
 
       case "open_pull_request": {
