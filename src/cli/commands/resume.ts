@@ -9,6 +9,8 @@ import { ArchitectAgent } from "../../agents/architect/agent.js";
 import { PlannerAgent } from "../../agents/planner/agent.js";
 import { DeveloperAgent } from "../../agents/developer/agent.js";
 import { ReviewerAgent } from "../../agents/reviewer/agent.js";
+import { IntegratorAgent } from "../../agents/integrator/agent.js";
+import { DeployerAgent } from "../../agents/deployer/agent.js";
 import { RepoReader } from "../../github/repo-reader.js";
 import { FileWriter } from "../../github/file-writer.js";
 import { BranchManager } from "../../github/branch-manager.js";
@@ -429,21 +431,50 @@ async function resumePhase(
 
     case "INTEGRATING": {
       console.log(chalk.cyan("\n[Phase 6] Integrating modules..."));
-      console.log(chalk.yellow("  Integrator agent will be implemented in Sprint 5."));
-      console.log(chalk.yellow("  This phase handles merging approved PRs in dependency order.\n"));
 
-      // For now, just transition to AWAITING_CODE_APPROVAL
-      state.current_phase = "AWAITING_CODE_APPROVAL";
-      state.updated_at = new Date().toISOString();
-      await stateStore.saveState(targetRepo, state, sha);
+      const integrator = new IntegratorAgent({
+        targetRepo,
+        prManager,
+        repoReader,
+        fileWriter,
+        developmentPlanPath: "docs/development-plan.json",
+      });
 
+      try {
+        const result = await integrator.run({});
+        console.log(chalk.green("\n✓ Integration complete."));
+        console.log(result);
+      } catch (error) {
+        console.log(chalk.red(`\n✗ Integration failed: ${error instanceof Error ? error.message : String(error)}`));
+        throw error;
+      }
+
+      // Request Gate 3 approval (human review of integrated code)
+      await gateManager.requestApproval("code", "main branch after integration");
       return "AWAITING_CODE_APPROVAL";
     }
 
     case "DEPLOYING": {
       console.log(chalk.cyan("\n[Phase 7] Deploying application..."));
-      console.log(chalk.yellow("  Deployer agent will be implemented in Sprint 5.\n"));
-      return "DEPLOYING";
+
+      const deployer = new DeployerAgent({
+        targetRepo,
+        repoReader,
+        architectureDocumentPath: "docs/architecture-analysis.md",
+      });
+
+      try {
+        const result = await deployer.run({});
+        console.log(chalk.green("\n✓ Deployment process complete."));
+        console.log(result);
+      } catch (error) {
+        console.log(chalk.red(`\n✗ Deployment failed: ${error instanceof Error ? error.message : String(error)}`));
+        throw error;
+      }
+
+      // Request Gate 4 approval (post-deploy verification)
+      await gateManager.requestApproval("deploy", "deployed application");
+      return "AWAITING_DEPLOY_APPROVAL";
     }
 
     default: {
@@ -553,6 +584,18 @@ function showNextSteps(phase: string, targetRepo: GitHubRepo): void {
       console.log(`  1. Review the architecture document at: ${targetRepo.owner}/${targetRepo.repo}/docs/architecture-analysis.md`);
       console.log("  2. Approve: `savante-orch approve --gate architecture --target ...`");
       console.log("  3. Or reject: `savante-orch reject --gate architecture --feedback '...' --target ...`\n");
+      break;
+
+    case "AWAITING_CODE_APPROVAL":
+      console.log(`  1. Review the integrated code in: ${targetRepo.owner}/${targetRepo.repo} (main branch)`);
+      console.log("  2. Approve: `savante-orch approve --gate code --target ...`");
+      console.log("  3. Or reject: `savante-orch reject --gate code --feedback '...' --target ...`\n");
+      break;
+
+    case "AWAITING_DEPLOY_APPROVAL":
+      console.log(`  1. Verify the deployed application is working`);
+      console.log("  2. Approve: `savante-orch approve --gate deploy --target ...`");
+      console.log("  3. Or reject: `savante-orch reject --gate deploy --feedback '...' --target ...`\n");
       break;
 
     case "DEVELOPING":
