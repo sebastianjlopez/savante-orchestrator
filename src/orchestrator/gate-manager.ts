@@ -10,11 +10,24 @@ export class GateManager {
   private stateStore: StateStore;
   private state: OrchestratorState;
   private targetRepo: GitHubRepo;
+  /** Latest orchestrator-state.json blob SHA on `_orchestrator` (required for GitHub updates). */
+  private stateSha: string;
 
-  constructor(stateStore: StateStore, state: OrchestratorState, targetRepo: GitHubRepo) {
+  constructor(
+    stateStore: StateStore,
+    state: OrchestratorState,
+    targetRepo: GitHubRepo,
+    stateFileSha: string
+  ) {
     this.stateStore = stateStore;
     this.state = state;
     this.targetRepo = targetRepo;
+    this.stateSha = stateFileSha;
+  }
+
+  /** SHA after last successful save (for callers that chain further GitHub state writes). */
+  getStateSha(): string {
+    return this.stateSha;
   }
 
   /**
@@ -170,14 +183,10 @@ export class GateManager {
   }
 
   private async saveState(): Promise<void> {
-    // For now, we'll use a simple implementation
-    // In production, this would get the sha from the state store
-    const content = Buffer.from(JSON.stringify(this.state, null, 2)).toString("base64");
-
-    await this.stateStore.saveState(
+    this.stateSha = await this.stateStore.saveState(
       this.targetRepo,
       this.state,
-      "" // This should be the actual sha from the state file
+      this.stateSha
     );
   }
 }

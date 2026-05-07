@@ -4,6 +4,9 @@ import { GitHubClient, type GitHubRepo } from "../../github/client.js";
 import { StateStore } from "../../orchestrator/state-store.js";
 import { StateMachine, type TransitionAction } from "../../orchestrator/state-machine.js";
 import { GateManager } from "../../orchestrator/gate-manager.js";
+import type { OrchestratorState } from "../../types/state.js";
+import type { GateName } from "../../notifications/gate-contract.js";
+import { buildGateReachedPayload, emitGateReached } from "../../notifications/gate-events.js";
 import { AnalystAgent } from "../../agents/analyst/agent.js";
 import { ArchitectAgent } from "../../agents/architect/agent.js";
 import { PlannerAgent } from "../../agents/planner/agent.js";
@@ -20,6 +23,21 @@ import type { DevelopmentPlan, ModuleSpec } from "../../types/plan.js";
 
 interface ResumeOptions {
   target?: string;
+}
+
+async function emitGateNotificationSafe(
+  state: OrchestratorState,
+  targetRepo: GitHubRepo,
+  gate: GateName,
+  paths: string[]
+): Promise<void> {
+  try {
+    await emitGateReached(buildGateReachedPayload(state, targetRepo, gate, paths));
+  } catch (e) {
+    console.warn(
+      chalk.yellow(`  Gate webhook notification failed: ${e instanceof Error ? e.message : e}`)
+    );
+  }
 }
 
 export async function resumeCommand(options: ResumeOptions): Promise<void> {
@@ -62,7 +80,7 @@ export async function resumeCommand(options: ResumeOptions): Promise<void> {
     const fileWriter = new FileWriter(octokit);
     const branchManager = new BranchManager(octokit);
     const prManager = new PRManager(octokit);
-    const gateManager = new GateManager(stateStore, state, targetRepo);
+    const gateManager = new GateManager(stateStore, state, targetRepo, sha);
 
     // Resume based on current phase
     const nextPhase = await resumePhase(
@@ -126,6 +144,8 @@ async function resumePhase(
 
       // Request Gate 1 approval
       await gateManager.requestApproval("domain", "docs/domain-analysis.md");
+      sha = gateManager.getStateSha();
+      await emitGateNotificationSafe(state, targetRepo, "domain", ["docs/domain-analysis.md"]);
       return "AWAITING_DOMAIN_APPROVAL";
     }
 
@@ -159,6 +179,10 @@ async function resumePhase(
 
       // Request Gate 2 approval
       await gateManager.requestApproval("architecture", "docs/architecture-analysis.md");
+      sha = gateManager.getStateSha();
+      await emitGateNotificationSafe(state, targetRepo, "architecture", [
+        "docs/architecture-analysis.md",
+      ]);
       return "AWAITING_TECH_APPROVAL";
     }
 
@@ -451,6 +475,10 @@ async function resumePhase(
 
       // Request Gate 3 approval (human review of integrated code)
       await gateManager.requestApproval("code", "main branch after integration");
+      sha = gateManager.getStateSha();
+      await emitGateNotificationSafe(state, targetRepo, "code", [
+        "main branch after integration",
+      ]);
       return "AWAITING_CODE_APPROVAL";
     }
 
@@ -474,6 +502,8 @@ async function resumePhase(
 
       // Request Gate 4 approval (post-deploy verification)
       await gateManager.requestApproval("deploy", "deployed application");
+      sha = gateManager.getStateSha();
+      await emitGateNotificationSafe(state, targetRepo, "deploy", ["deployed application"]);
       return "AWAITING_DEPLOY_APPROVAL";
     }
 

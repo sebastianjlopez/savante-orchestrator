@@ -9,6 +9,10 @@ export interface OrchestratorState {
   project_id: string;
   source_repo: string;
   target_repo: string;
+  /** Optional Slack channel (ID) for orchestrator gate notifications (Jim). */
+  slack_delivery_channel_id?: string | null;
+  /** Optional thread timestamp for gate notifications in that channel. */
+  slack_delivery_thread_ts?: string | null;
   current_phase: PhaseType;
   gates: {
     domain: GateStatus;

@@ -32,10 +32,10 @@ export async function rejectCommand(options: RejectOptions): Promise<void> {
 
     // Load state
     const stateStore = new StateStore(octokit);
-    const { state } = await stateStore.loadState(targetRepo);
+    const { state, sha } = await stateStore.loadState(targetRepo);
 
     // Create gate manager
-    const gateManager = new GateManager(stateStore, state, targetRepo);
+    const gateManager = new GateManager(stateStore, state, targetRepo, sha);
 
     // Reject the gate
     console.log(chalk.yellow(`Rejecting ${gateName} gate...`));

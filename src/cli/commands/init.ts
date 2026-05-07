@@ -79,6 +79,8 @@ async function initializeState(github: GitHubClient, targetRepo: GitHubRepo): Pr
     project_id: crypto.randomUUID(),
     source_repo: `${targetRepo.owner}/${targetRepo.repo}`,
     target_repo: `${targetRepo.owner}/${targetRepo.repo}`,
+    slack_delivery_channel_id: null as string | null,
+    slack_delivery_thread_ts: null as string | null,
     current_phase: "INIT",
     gates: {
       domain: { status: "pending", attempts: 0, feedback: [] },

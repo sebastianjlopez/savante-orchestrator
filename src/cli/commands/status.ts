@@ -1,7 +1,6 @@
 import chalk from "chalk";
 import { GitHubClient, type GitHubRepo } from "../../github/client.js";
 import { StateStore } from "../../orchestrator/state-store.js";
-import { GateManager } from "../../orchestrator/gate-manager.js";
 import type { PhaseType } from "../../types/state.js";
 
 interface StatusOptions {

@@ -31,7 +31,7 @@ export async function approveCommand(options: ApproveOptions): Promise<void> {
     const { state, sha } = await stateStore.loadState(targetRepo);
 
     // Create gate manager
-    const gateManager = new GateManager(stateStore, state, targetRepo);
+    const gateManager = new GateManager(stateStore, state, targetRepo, sha);
 
     // Approve the gate
     console.log(chalk.yellow(`Approving ${gateName} gate...`));
